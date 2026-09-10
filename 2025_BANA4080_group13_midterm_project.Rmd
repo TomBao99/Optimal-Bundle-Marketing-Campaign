@@ -1,0 +1,416 @@
+---
+title: "Mid-term Project - BANA 4080"
+author: "Tom Bao, Allie Do, Mark Tran"
+date: "2025-02-23"
+output:
+  html_document:
+    code_folding: "hide"
+    ode_folding: "show"
+---
+```{r setup, include= FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE,
+                      warning = FALSE)
+```
+
+# REGORK GROCERY CHAIN: Optimal Bundle Marketing Campaign to Raise Revenue {.tabset}
+
+## Introduction
+
+As part of the Regork team, our goal is to identify opportunities for the grocery store to increase revenue and profits. Based on our research, we can boost sales by leveraging the demand for bundled products, encouraging customers to purchase more items per shopping trip.
+
+To achieve this, we first analyze common product bundles. Next, we examine customer purchasing behavior to determine whether they buy these bundles due to promotional offers or because they naturally complement each other. Finally, we identify underperforming product pairs that have the potential for increased sales, allowing us to strategically promote them and drive higher revenue.
+
+## Package Required
+
+```{r}
+# Load required libraries
+library(tidyverse)
+library(completejourney)
+library(scales)
+
+```
+
+## Data Preparation
+We firstly look into some top pairs of products that people usually buy together. With bag snacks and soft drinks being the the highest pair, followed by soft drink and bread, we want to know some potential pairs that we can boost up the sales by issuing coupons. Apparently, soft drinks can be bundled with many products according to the visualization. We believe soft drink and pizza will be a great pair to target on according to people's eating habit. 
+
+```{r}
+
+transactions <- get_transactions()
+products <- products
+demographics <- demographics
+
+basket_data <- transactions %>%
+  select(basket_id, product_id) %>%
+  left_join(products, by = "product_id", relationship = "many-to-many") %>%
+  select(basket_id, product_category)
+# Remove missing values
+basket_data <- na.omit(basket_data)
+
+# Compute product pair counts (co-occurrences)
+product_pairs <- basket_data %>%
+  inner_join(basket_data, by = "basket_id", relationship = "many-to-many") %>%
+  filter(product_category.x != product_category.y) %>%  # Remove self-pairing
+  mutate(
+    product_A = pmin(product_category.x, product_category.y),  # Sort alphabetically
+    product_B = pmax(product_category.x, product_category.y)   # Sort alphabetically
+  ) %>%
+  group_by(product_A, product_B) %>%
+  summarise(pair_count = n(), .groups = "drop") %>%
+  arrange(desc(pair_count))  # Sort by most frequent pairs
+
+# **FILTER ONLY FOOD CATEGORIES**
+food_categories <- c("BAKED BREAD/BUNS/ROLLS", "CHEESE", "FLUID MILK PRODUCTS",
+                     "SOFT DRINKS", "BAG SNACKS", "FROZEN DINNERS/ENTREES",
+                     "FROZEN PIZZA", "YOGURT", "MEAT", "SEAFOOD", "FRUITS",
+                     "VEGETABLES", "CEREAL", "CANDY", "COFFEE/TEA", "ICE CREAM")
+
+top_food_pairs <- product_pairs %>%
+  filter(product_A %in% food_categories & product_B %in% food_categories) %>%
+  top_n(10, pair_count)
+
+```
+
+
+
+```{r, fig.width=10}
+# Plot network graph
+ggplot(data = top_food_pairs, aes(x = product_A, y = product_B, fill = pair_count)) +
+  geom_tile()+
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = pair_count), color = "white", size = 3)+
+  theme (
+    axis.text.y = element_text(size = 7),
+    axis.text.x  = element_text(size = 7),
+  )+
+  labs(
+    title = "Top Purchased Pair Products ",
+    x =' Products A',
+    y = 'Products B',
+    fill = 'Number of pairs'
+    )
+```
+
+
+## Customers' Buying Behaviors {.tabset}
+
+We take a closer look at how customers purchase these bundles to determine whether the combination of frozen pizza and soft drinks is bought more frequently with or without coupons.
+
+### Total Money of Coupon Discount by Pairs
+
+From this, we can see that the total amount of discounted money in bundle frozen pizza and soft drink is not really high, but it has a lot of potential. We think by getting more people know about this with more coupons, we can stimulate the sales. 
+
+```{r}
+# Filter necessary data
+sample <- transactions %>% select(product_id, household_id, transaction_timestamp, coupon_disc) %>% inner_join(products, by = "product_id", relationship = "many-to-many")
+
+# Filter necessary food_categories
+sample2 <- sample %>% filter(product_category %in% food_categories)
+
+# Join 2 sample2 to get pair categories
+sample3 <- sample2 %>% inner_join(sample2, by = c("household_id", "transaction_timestamp"), relationship = "many-to-many")
+
+# Calculate coupon_disc grouped by product_category pairs
+# Calculate coupon_disc grouped by product_category pairs, keeping two columns for the pairs
+sample3_summary <- sample3 %>%
+  filter(product_category.x != product_category.y) %>%
+  mutate(
+    # Ensure that the pairs are in a consistent order
+    pair_x = pmin(product_category.x, product_category.y),
+    pair_y = pmax(product_category.x, product_category.y)
+  ) %>%
+  group_by(pair_x, pair_y) %>%
+  summarize(total_coupon_disc = sum(coupon_disc.x, na.rm = TRUE), .groups = 'drop')
+```
+
+
+```{r, fig.width=12.5}
+ggplot(data =sample3_summary , aes(x = pair_x, y = pair_y, fill = total_coupon_disc)) + 
+  geom_tile() +
+  geom_text(aes(label = dollar(total_coupon_disc)), color = "white", size = 5) +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", labels = label_dollar()) +
+    theme (
+    axis.text.y = element_text(size = 8),
+    axis.text.x  = element_text(size = 8),
+  )+
+  labs(
+    title = "Total Money of Coupon Discount by Pairs",
+    x =' Products A',
+    y = 'Products B',
+    fill = 'Total money of coupon discount'
+    )
+```
+
+
+### Total Purchased Bundle with/without Coupons 
+
+
+```{r}
+
+basket_data <- transactions %>%
+  select(basket_id, product_id, coupon_disc) %>%  # coupon_disc is included
+  left_join(products, by = "product_id") %>%
+  select(basket_id, product_category, coupon_disc)  # Keep relevant columns
+
+# Remove missing values
+basket_data <- na.omit(basket_data)
+# Compute product pair counts (co-occurrences) with and without coupon discount
+product_pairs_with_coupon <- basket_data %>%
+  inner_join(basket_data, by = "basket_id", relationship = "many-to-many") %>%
+  filter(product_category.x != product_category.y, coupon_disc.x > 0) %>%  # Only include pairs with coupon discount
+  mutate(
+    product_A = pmin(product_category.x, product_category.y),  # Sort alphabetically
+    product_B = pmax(product_category.x, product_category.y)   # Sort alphabetically
+  ) %>%
+  group_by(product_A, product_B) %>%
+  summarise(pair_count_with_coupon = n(), .groups = "drop")  # Count pairs with coupon discount
+
+product_pairs_without_coupon <- basket_data %>%
+  inner_join(basket_data, by = "basket_id", relationship = "many-to-many") %>%
+  filter(product_category.x != product_category.y, coupon_disc.x == 0) %>%  # Only include pairs with no coupon discount
+  mutate(
+    product_A = pmin(product_category.x, product_category.y),  # Sort alphabetically
+    product_B = pmax(product_category.x, product_category.y)   # Sort alphabetically
+  ) %>%
+  group_by(product_A, product_B) %>%
+  summarise(pair_count_without_coupon = n(), .groups = "drop")  # Count pairs without coupon discount
+
+# Merge both datasets to have both pair counts (with and without coupon discount)
+top_food_pairs_with_coupon <- product_pairs_with_coupon %>%
+  filter(product_A %in% food_categories & product_B %in% food_categories) %>%
+  top_n(10, pair_count_with_coupon)
+
+top_food_pairs_without_coupon <- product_pairs_without_coupon %>%
+  filter(product_A %in% food_categories & product_B %in% food_categories) %>%
+  top_n(10, pair_count_without_coupon)
+
+
+```
+
+#### With coupons {.tabset}
+
+We use the Transactions Dataset to count the total transactions that use Coupons to get the bundle of frozen pizza and soft drink. As we can see, the number is a little low. 
+
+
+```{r, fig.width= 10} 
+ggplot(data = top_food_pairs_with_coupon, aes(x = product_A, y = product_B, fill = pair_count_with_coupon))+ 
+  geom_tile() +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = pair_count_with_coupon), color = "white", size = 4) +
+  labs(
+    title = "Top Pair Products Purchased with Coupon",
+    x =' Products A',
+    y = 'Products B',
+    fill = 'Number of pairs with coupon'
+    )
+
+```
+
+#### Without Coupons
+
+We use the Transactions Dataset to count the total transactions that use Coupons to get the bundle of frozen pizza and soft drink. Comparing to the purchasing with coupons count, purchasing without coupons count is significantly higher, around 1000 times higher. 
+
+```{r , fig.width= 10}
+ggplot(data = top_food_pairs_without_coupon, aes(x = product_A, y = product_B, fill = pair_count_without_coupon
+))+ 
+  geom_tile() +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  geom_text(aes(label = pair_count_without_coupon), color = "white", size = 4)+
+  labs(
+    title = "Top Pair Products Purchased without Coupon",
+    x =' Products A',
+    y = 'Products B',
+    fill = 'Number of pairs without coupon'
+    )
+```
+
+From that, we can conclude that only a small portion of customers use coupons for this bundle, and we see it as an opportunity to boost the sales up by issuing more coupons for customers. What we can also see from these 2 graphs is while the bundle of Frozen Pizza and Soft Drink is in the top 10 purchased with coupons, it is not in the top 10 purchased without coupons. Therefore, this is a great potential pair to promote and get more sales by delivering more coupons.
+
+## Target customers' groups {.tabset}
+
+In this section, we will decide on which age group purchase the bundle the most. 
+
+### Top Pair Products Purchased with Coupon by Age Group
+
+In this section, we can see 25-44, 35-44, 45-54 are the age groups that usually purchase products in pair. We can also see that the number of pair with coupon is just below 125, which is a pretty low number. We can also know that we need to improve our coupon distribition strategy.
+
+```{r} 
+demo1 <-demographics %>%
+  inner_join(transactions, by ='household_id') %>%
+  inner_join(products, by = "product_id") %>%
+  filter(coupon_disc > 0) %>%
+  filter(product_category %in% food_categories)
+
+age_demo <- demo1 %>%
+  inner_join(demo1, by = c("household_id", "basket_id"), relationship = "many-to-many") %>%
+  filter(product_category.x != product_category.y) %>%  # Include pairs with no coupon discount
+  mutate(
+    product_A = pmin(product_category.x, product_category.y),  # Sort alphabetically
+    product_B = pmax(product_category.x, product_category.y)   # Sort alphabetically
+  ) %>%
+  group_by(product_A, product_B, age.x) %>%
+  summarise(pair_count_with_coupon = n(), .groups = "drop")  # 
+```
+
+```{r, fig.width= 14}
+ggplot(data = age_demo, aes(x = product_A, y = pair_count_with_coupon, fill = product_B)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~age.x) +
+  scale_fill_manual(values = c(
+    "BAKED BREAD/BUNS/ROLLS" = "#E69F00",  # Orange
+    "CHEESE" = "#56B4E9",  # Blue
+    "FLUID MILK PRODUCTS" = "#009E73",  # Green
+    "FROZEN PIZZA" = "#F0E442",  # Yellow
+    "SOFT DRINKS" = "#0072B2",  # Dark Blue
+    "YOGURT" = "#D55E00"  # Red
+  )) +
+  theme(
+    axis.text.x = element_text(size = 8)
+  )+
+  labs(
+    title = "Top Pair Products Purchased with Coupon by Age Groups",
+    x =' Products A',
+    y = 'Number of pair with coupon',
+    fill = 'Products B'
+    )
+```
+
+### Top Pair Products Purchased without Coupon by Age Group
+
+We can see that the 3 age groups above (25-34, 35-44, 45-54) continue to be highest in bundle purchasing. However, we can see the enormous difference in the number of pair (x-axis). 
+
+```{r}
+demo2 <-demographics %>%
+  inner_join(transactions, by ='household_id') %>%
+  inner_join(products, by = "product_id") %>%
+  filter(coupon_disc == 0) %>%
+  filter(product_category %in% food_categories)
+
+age_demo2 <- demo2 %>%
+  inner_join(demo1, by = c("household_id", "basket_id"), relationship = "many-to-many") %>%
+  filter(product_category.x != product_category.y) %>%  # Only include pairs with no coupon discount
+  mutate(
+    product_A = pmin(product_category.x, product_category.y),  # Sort alphabetically
+    product_B = pmax(product_category.x, product_category.y)   # Sort alphabetically
+  ) %>%
+  group_by(product_A, product_B, age.x) %>%
+  summarise(pair_count_without_coupon = n(), .groups = "drop")  # 
+```
+
+```{r, fid.width =20}
+ggplot(data = age_demo2, aes(x = product_A, y = pair_count_without_coupon, fill = product_B)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~age.x) +
+  scale_fill_manual(values = c(
+    "BAKED BREAD/BUNS/ROLLS" = "#E69F00",  # Orange
+    "CHEESE" = "#56B4E9",  # Blue
+    "FLUID MILK PRODUCTS" = "#009E73",  # Green
+    "FROZEN PIZZA" = "#F0E442",  # Yellow
+    "SOFT DRINKS" = "#0072B2",  # Dark Blue
+    "YOGURT" = "#D55E00"  # Red
+  )) +
+  theme(
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 6),
+    legend.text = element_text(size=6))+
+ labs(
+    title = "Top Pair Products Purchased without Coupon by Age Groups",
+    x =' Products A',
+    y = 'Number of pair without coupon',
+    fill = 'Products B'
+    )
+```
+
+
+From that, we can conclude that we should focus on these 3 age group for our bundle promotion since the count are highest in these group. Focusing on 3 age groups can give us a better vision for effective coupon distribution.
+
+## Coupon Usage by Age Group
+
+In our next visualization, we want to show which will be the most effective way to deliver these coupons to our target customer. Due to the dataset structure, we decided to divide 3 situations where there were both coupons, display only, and mailer only. According to the result, we can see that "Both Display and Mailer" will yield the highest approach to customer, "Mailer Only" is following right behind with not much different while "Display Only" will get the least customers. 
+
+```{r}
+data("promotions_sample")
+promotions_collapsed <- promotions_sample %>%
+  mutate(
+    coupon_display = ifelse(display_location != 0, 1, 0),
+    coupon_mailer  = ifelse(mailer_location != 0, 1, 0)
+  ) %>%
+  group_by(product_id) %>%
+  summarise(
+    coupon_display = if_else(any(coupon_display == 1), 1, 0),
+    coupon_mailer  = if_else(any(coupon_mailer == 1), 1, 0),
+    .groups = "drop"
+  )
+
+# join data with promotioms
+joined_data <- transactions %>%
+  left_join(promotions_collapsed, by = "product_id")
+
+# join with demographics
+joined_data <- joined_data %>%
+  left_join(demographics, by = "household_id")
+
+# create coupon flags & coupon_type via mutual
+
+joined_data <- joined_data %>%
+  mutate(
+    has_display = ifelse(coupon_display == 1, 1, 0),
+    has_mailer  = ifelse(coupon_mailer  == 1, 1, 0),
+    coupon_type = case_when(
+      has_display == 1 & has_mailer == 0 ~ "Display Only",
+      has_display == 0 & has_mailer == 1 ~ "Mailer Only",
+      has_display == 1 & has_mailer == 1 ~ "Both",
+      TRUE ~ "No Coupon"
+    )
+  )
+
+# Filter out "no coupons"
+
+coupon_data_prepped <- joined_data %>%
+  filter(coupon_type != "No Coupon")
+
+# Summarize by age and coupon type - calculating percentage 
+
+plot_data <- coupon_data_prepped %>%
+  group_by(age, coupon_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  #group_by(age) %>%
+  # mutate(count = sum(n)) %>%
+  #ungroup() %>%
+  filter(age != 'NA')
+
+```
+
+
+```{r}
+ggplot(plot_data, aes(x = age, y = n, fill = coupon_type)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Age Group",
+    y = "Number of coupons",
+    fill = "Coupon Type",
+    title = "Coupon Usage by Age Group"
+  ) +
+  theme_minimal()
+```
+
+## Conclusion
+
+### Recommendations {.tabset}
+According from our data, in order to push the sales of bundle frozen pizza with soft drink, we should increase the number of coupons being delivered to customers so they can feel more interested to try these products together. We will have to gain customers attention, and we have figured out to let customers know about the available deals. There are 2 recommendations: 
+
+- If the grocery chain is working all good and have stable financial settings, the "Both" way will be the best and we should implementing that.
+- However, if the grocery chain is not doing well, sticking with "Mailer" should be a better choice since it can cut cost and the difference is not outstanding in terms of coupons getting to people. 
+
+### Limitations 
+
+This report is calculating the categories of Frozen Pizza and Soft Drink, so we do not know exactly which product items will be best for the bundle promotions. Looking into the future, we will have to manipulating the data to get the most potential pair of product items and run this promotions to test the success of this. 
+
+### Opportunity
+
+We assume the private brands in this 'completejourney' dataset belongs to Regork. Looking into the future, we can push the sales and recognition level of these brands by using this bundle promotions as well.
+
+
+
